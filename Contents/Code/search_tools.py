@@ -228,10 +228,23 @@ class AlbumSearchTool(SearchTool):
         """
             Builds the search arguments for the API call.
         """
-        # First, normalize the name
+        # First, normalize the name (this also extracts series_info)
         self.normalize_name()
         # Album title query
         album_param = 'title=' + urllib.quote(self.normalizedName)
+
+        # Add series info as keywords if extracted
+        keywords_param = ''
+        if hasattr(self, 'series_info') and self.series_info:
+            # Clean up series info: remove book numbers but keep series name
+            series_keywords = re.sub(r'\b(book|volume|part|episode)\s*\d+\b', '', 
+                                     self.series_info, flags=re.IGNORECASE)
+            series_keywords = re.sub(r'\b\d+\b', '', series_keywords)  # Remove standalone numbers
+            series_keywords = re.sub(r'[^\w\s]', '', series_keywords)  # Remove special chars
+            series_keywords = re.sub(r'\s+', ' ', series_keywords).strip()
+            if series_keywords:
+                keywords_param = '&keywords=' + urllib.quote(series_keywords)
+                log.debug('Adding series keywords: %s', series_keywords)
 
         # Fix match/manual search doesn't provide author
         if self.media.artist:
@@ -240,8 +253,9 @@ class AlbumSearchTool(SearchTool):
             # Use keyword search to supplement missing author
             album_param = 'keywords=' + urllib.quote(self.normalizedName)
             artist_param = ''
+            keywords_param = ''  # Don't duplicate keywords
         # Combine params
-        query = (album_param + artist_param)
+        query = (album_param + artist_param + keywords_param)
         return query
 
     def check_if_preorder(self, book_date):
@@ -293,6 +307,8 @@ class AlbumSearchTool(SearchTool):
         """
             Normalizes the album name by removing
             unwanted characters and words.
+            Extracts the primary title (before separators like ' - ' or ':')
+            and stores series info separately for keyword search fallback.
         """
         # Get name from either album or title
         input_name = self.media.album if self.media.album else self.media.title
@@ -300,9 +316,26 @@ class AlbumSearchTool(SearchTool):
 
         # Remove Diacritics
         name = String.StripDiacritics(input_name)
-        # Remove brackets and text inside
+        # Remove brackets and text inside (e.g., [uk] region overrides)
         name = re.sub(r'\[[^"]*\]', '', name)
-        # Remove unwanted characters
+
+        # Extract primary title by splitting on common series/subtitle separators
+        # Patterns: "Title - Series Name 15", "Title: Subtitle", "Title, Book 1"
+        # Store the series/subtitle info for potential keyword use
+        self.series_info = None
+        separator_match = re.match(r'^([^:\-,]+?)(?:\s*[-:,]\s*(.+))?$', name)
+        if separator_match:
+            primary_title = separator_match.group(1).strip()
+            series_part = separator_match.group(2)
+            if series_part:
+                self.series_info = series_part.strip()
+                log.debug('Extracted series info: %s', self.series_info)
+            # Only use the primary title if it's substantial (more than just a word)
+            if len(primary_title.split()) >= 1 and len(primary_title) > 3:
+                name = primary_title
+                log.debug('Using primary title: %s', name)
+
+        # Remove unwanted characters (keep alphanumeric and spaces)
         name = re.sub(r'[^\w\s]', '', name)
         # Remove unwanted words
         name = re.sub(r'\b(official|audiobook|unabridged|abridged)\b',
